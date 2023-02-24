@@ -20,6 +20,7 @@ sl_hfxo_manager_config.h=1391893206
 sl_icm20648_config.h=622553943
 sl_icm20689_config.h=-1201614583
 sl_iostream_swo_config.h=748883309
+sl_lsm303agr_config.h=-1201614583
 sl_mbedtls_config.h=-1710232477
 sl_memory_config.h=1136720201
 sl_power_manager_config.h=-244691433
