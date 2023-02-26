@@ -34,6 +34,7 @@
 #include "app.h"
 #include "app_log.h"
 #include "string.h"
+#include "sl_simple_led_instances.h"
 
 // The advertising set handle allocated from Bluetooth stack.
 static uint8_t advertising_set_handle = 0xff;
@@ -294,10 +295,8 @@ get_system_id (void)
 SL_WEAK void
 app_init (void)
 {
-  /////////////////////////////////////////////////////////////////////////////
-  // Put your additional application init code here!                         //
-  // This is called once during start-up.                                    //
-  /////////////////////////////////////////////////////////////////////////////
+  sl_led_init (&sl_led_led0);
+  sl_led_turn_on (&sl_led_led0);
 }
 
 /**************************************************************************//**
@@ -335,6 +334,7 @@ sl_bt_on_event (sl_bt_msg_t *evt)
           "\r\n*** MULTIPLE CENTRAL MULTIPLE PERIPHERAL DUAL TOPOLOGY EXAMPLE ***\r\n\n");
       get_stack_version (evt);
       get_system_id ();
+
       // !! DEPRECATED Set passive scanning on 1Mb PHY
 //      sc = sl_bt_scanner_set_mode (gap_1m_phy, 0);
       sc = sl_bt_scanner_set_parameters (sl_bt_scanner_scan_mode_passive, 20,

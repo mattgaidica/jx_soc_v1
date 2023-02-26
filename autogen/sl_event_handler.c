@@ -22,6 +22,7 @@
 #include "sl_mbedtls.h"
 #include "sl_mpu.h"
 #include "nvm3_default.h"
+#include "sl_simple_led_instances.h"
 #include "psa/crypto.h"
 #include "sli_protocol_crypto.h"
 #include "sl_iostream_init_instances.h"
@@ -45,6 +46,7 @@ void sl_platform_init(void)
 void sl_driver_init(void)
 {
   sl_debug_swo_init();
+  sl_simple_led_init_instances();
 }
 
 void sl_service_init(void)

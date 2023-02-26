@@ -26,4 +26,6 @@ sl_memory_config.h=1136720201
 sl_power_manager_config.h=-244691433
 sl_rail_util_pa_config.h=-1877496684
 sl_rail_util_pti_config.h=1925916319
+sl_simple_led_inst0_config.h=-1152792529
+sl_simple_led_inst_config.h=-1466317159
 sl_sleeptimer_config.h=847044378
