@@ -35,6 +35,9 @@
 #include "app_log.h"
 #include "string.h"
 #include "sl_simple_led_instances.h"
+#include "em_usart.h"
+#include "em_cmu.h"
+#include "stdio.h"
 
 // The advertising set handle allocated from Bluetooth stack.
 static uint8_t advertising_set_handle = 0xff;
@@ -61,9 +64,23 @@ static const char string_central[] = "CENTRAL";
 static const char string_peripheral[] = "PERIPHERAL";
 
 #define MAX_CONNECTIONS    8
-#define CONNECTION_TIMEOUT 1
+#define CONNECTION_TIMEOUT_EVT  1
+#define BLINK_TIMEOUT_EVT       2
 
-sl_sleeptimer_timer_handle_t connection_timeout_timer;
+// CUSTOM SPI - LSM303AGR
+#define CS_PORT           gpioPortB
+#define CS_XL_PIN         4
+#define CS_MAG_PIN        3
+#define CLK_PORT          gpioPortA
+#define CLK_PIN           0
+#define DATA_PORT         gpioPortB
+#define DATA_PIN          0
+#define SPI_USART         USART1
+//#define SPI_LOCATION      USART_ROUTE_LOCATION_LOC1
+#define SPI_USART_CLOCK   cmuClock_USART1
+#define READ_CMD_BIT      8 // !! update
+
+sl_sleeptimer_timer_handle_t connection_timeout_timer, blink_timer;
 sl_bt_gap_phy_type_t scanning_phy = sl_bt_gap_1m_phy;
 sl_bt_gap_phy_type_t connection_phy = sl_bt_gap_1m_phy;
 uint8_t dev_index;
@@ -105,6 +122,78 @@ typedef struct
   uint8_t conn_handle;
 } device_info_t;
 
+// https://community.silabs.com/s/article/efm32-as-a-3-wire-spi-master?language=en_US
+void
+initSpi3Wire ()
+{
+  USART_InitSync_TypeDef usartConfig = USART_INITSYNC_DEFAULT;
+
+  /* Enabling clock to USART and GPIO */
+  CMU_ClockEnable (SPI_USART_CLOCK, true);
+  CMU_ClockEnable (cmuClock_GPIO, true);
+
+//  usartConfig.clockMode = usartClockMode3;
+  usartConfig.msbf = true;
+
+  /* Configure USART as SPI master */
+  USART_InitSync (SPI_USART, &usartConfig);
+
+  /* Enable internal lookback between TX and RX pin and enable Auto CS */
+  SPI_USART->CTRL |= USART_CTRL_LOOPBK; // USART_CTRL_AUTOCS
+
+  /* Configure GPIOs for SPI pins */
+  GPIO_PinModeSet (DATA_PORT, DATA_PIN, gpioModePushPull, 0);/* Data */
+  GPIO_PinModeSet (CLK_PORT, CLK_PIN, gpioModePushPull, 1);/* Clock */
+  GPIO_PinModeSet (CS_PORT, CS_XL_PIN, gpioModePushPull, 1);/* CS */
+  GPIO_PinModeSet (CS_PORT, CS_MAG_PIN, gpioModePushPull, 1);/* CS */
+
+  USART_Enable (SPI_USART, usartEnable);
+}
+
+void
+writeSpiByte (uint8_t addr, uint8_t data)
+{
+  /* Write addr to TXDATA0 to be transmitted first, before TXDATA1 with data
+   * value is sent */
+  SPI_USART->TXDOUBLE = addr << _USART_TXDOUBLE_TXDATA0_SHIFT
+      | data << _USART_TXDOUBLE_TXDATA1_SHIFT;
+
+  /* Wait for TX to complete */
+  while (!(USART_StatusGet (SPI_USART) & USART_STATUS_TXC))
+    ;
+}
+
+uint8_t
+readSpiByte (uint8_t addr)
+{
+  SPI_USART->CMD = USART_CMD_RXBLOCKEN;/* Block RX while sending from master */
+  SPI_USART->CMD = USART_CMD_CLEARRX; /* Clear any old RX data */
+
+  /* Write data for sending read command with address and reading back data
+   * TXDATA0 contains read command and address.
+   * TXDATA1 contains dummy data to be sent when clocking back read data.
+   * The TXTRIAT0 and UBRXAT0 bits will tri-state the TX pin and unblock RX
+   * after the first byte has been transmitted.
+   * The TXTRIAT and UBRXAT bits really only need to be set for TXDATA0, but
+   * because of errata USART_E101 on some devices, we set these bits for TXDATA1
+   * as well. This works also for devices that does not have this errata.
+   */
+  SPI_USART->TXDOUBLEX = (addr | 1 << READ_CMD_BIT)
+      << _USART_TXDOUBLEX_TXDATA0_SHIFT |
+  USART_TXDOUBLEX_TXTRIAT0 |
+  USART_TXDOUBLEX_UBRXAT0 | 0x00 << _USART_TXDOUBLEX_TXDATA1_SHIFT |
+  USART_TXDOUBLEX_TXTRIAT1 |
+  USART_TXDOUBLEX_UBRXAT1;
+
+  /* Wait for valid RX DATA */
+  while (!(USART_StatusGet (SPI_USART) & USART_STATUS_RXDATAV))
+    ;
+
+  SPI_USART->CMD = USART_CMD_TXTRIDIS; /* Turn off TX tri-stating */
+
+  return SPI_USART->RXDATA;
+}
+
 /**************************************************************************//**
  Callback for the sleeptimer. Since this function is called from interrupt context,
  only an external signal is set, as no other BGAPI calls are allowed in this case.
@@ -114,7 +203,15 @@ sleep_timer_callback (sl_sleeptimer_timer_handle_t *handle, void *data)
 {
   (void) data;
   (void) handle;
-  sl_bt_external_signal (CONNECTION_TIMEOUT);
+  sl_bt_external_signal (CONNECTION_TIMEOUT_EVT);
+}
+
+void
+blink_timer_callback (sl_sleeptimer_timer_handle_t *handle, void *data)
+{
+  (void) data;
+  (void) handle;
+  sl_bt_external_signal (BLINK_TIMEOUT_EVT);
 }
 
 const char*
@@ -278,9 +375,24 @@ get_system_id (void)
   system_id[5] = address.addr[2];
   system_id[6] = address.addr[1];
   system_id[7] = address.addr[0];
-
   sc = sl_bt_gatt_server_write_attribute_value (gattdb_system_id, 0,
                                                 sizeof(system_id), system_id);
+  app_assert_status(sc);
+
+  char device_name_char[15] = "JXXXXXXXXXXXXX "; // add space for sprintf
+  sprintf (device_name_char + 2, "%X", (char) address.addr[5]);
+  sprintf (device_name_char + 4, "%X", (char) address.addr[4]);
+  sprintf (device_name_char + 6, "%X", (char) address.addr[3]);
+  sprintf (device_name_char + 8, "%X", (char) address.addr[2]);
+  sprintf (device_name_char + 10, "%X", (char) address.addr[1]);
+  sprintf (device_name_char + 12, "%X", (char) address.addr[0]);
+
+  uint8_t device_name_uint8[14];
+  memcpy (device_name_uint8, device_name_char, 14);
+
+  sc = sl_bt_gatt_server_write_attribute_value (gattdb_device_name, 0,
+                                                sizeof(device_name_uint8),
+                                                device_name_uint8);
   app_assert_status(sc);
 
   app_log("Local BT %s address: %02X:%02X:%02X:%02X:%02X:%02X\r\n",
@@ -295,8 +407,12 @@ get_system_id (void)
 SL_WEAK void
 app_init (void)
 {
+  sl_status_t sc;
   sl_led_init (&sl_led_led0);
-  sl_led_turn_on (&sl_led_led0);
+  /* Set connection timeout timer */
+  sc = sl_sleeptimer_start_periodic_timer (&blink_timer, 1 * 32768,
+                                           blink_timer_callback, NULL, 0, 0);
+  app_assert_status(sc);
 }
 
 /**************************************************************************//**
@@ -333,16 +449,11 @@ sl_bt_on_event (sl_bt_msg_t *evt)
       app_log(
           "\r\n*** MULTIPLE CENTRAL MULTIPLE PERIPHERAL DUAL TOPOLOGY EXAMPLE ***\r\n\n");
       get_stack_version (evt);
-      get_system_id ();
+      get_system_id (); // also update device name
 
-      // !! DEPRECATED Set passive scanning on 1Mb PHY
-//      sc = sl_bt_scanner_set_mode (gap_1m_phy, 0);
       sc = sl_bt_scanner_set_parameters (sl_bt_scanner_scan_mode_passive, 20,
                                          10); // use instead
       app_assert_status(sc);
-      // !! DEPRECATED Set scan interval and scan window:  50%duty cycle
-//      sc = sl_bt_scanner_set_timing (gap_1m_phy, 20, 10);
-//      app_assert_status(sc);
 
       // Start scanning
       sc = sl_bt_scanner_start (gap_1m_phy, scanner_discover_generic);
@@ -365,12 +476,7 @@ sl_bt_on_event (sl_bt_msg_t *evt)
       sc = sl_bt_legacy_advertiser_start (advertising_set_handle,
                                           sl_bt_legacy_advertiser_connectable);
 
-//      sc = sl_bt_legacy_advertiser_start(
-//        advertising_set_handle,
-//        advertiser_general_discoverable,
-//        advertiser_connectable_scannable);
       app_assert_status(sc);
-
       break;
 
       // -------------------------------
@@ -427,7 +533,8 @@ sl_bt_on_event (sl_bt_msg_t *evt)
       break;
 
     case sl_bt_evt_system_external_signal_id:
-      if (evt->data.evt_system_external_signal.extsignals & CONNECTION_TIMEOUT)
+      if (evt->data.evt_system_external_signal.extsignals
+          & CONNECTION_TIMEOUT_EVT)
         {
           /* Connection fail safe timer triggered, cancel connection procedure and restart scanning/discovery */
           app_log("Connection timeout!\r\n");
@@ -443,6 +550,11 @@ sl_bt_on_event (sl_bt_msg_t *evt)
           sc = sl_bt_connection_close (connecting_handle);
           app_assert_status(sc);
           connecting = false;
+        }
+      else if (evt->data.evt_system_external_signal.extsignals
+          & BLINK_TIMEOUT_EVT)
+        {
+          sl_led_toggle (&sl_led_led0);
         }
       break;
 

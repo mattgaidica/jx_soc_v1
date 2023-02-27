@@ -78,17 +78,33 @@
 // [TIMER4]$
 
 // $[USART0]
-// USART0 RX on PD01
-#define USART0_RX_PORT                           gpioPortD
+// USART0 CLK on PC02
+#define USART0_CLK_PORT                          gpioPortC
+#define USART0_CLK_PIN                           2
+
+// USART0 CS on PC03
+#define USART0_CS_PORT                           gpioPortC
+#define USART0_CS_PIN                            3
+
+// USART0 RX on PC01
+#define USART0_RX_PORT                           gpioPortC
 #define USART0_RX_PIN                            1
 
-// USART0 TX on PD02
-#define USART0_TX_PORT                           gpioPortD
-#define USART0_TX_PIN                            2
+// USART0 TX on PC00
+#define USART0_TX_PORT                           gpioPortC
+#define USART0_TX_PIN                            0
 
 // [USART0]$
 
 // $[USART1]
+// USART1 CLK on PB00
+#define USART1_CLK_PORT                          gpioPortB
+#define USART1_CLK_PIN                           0
+
+// USART1 TX on PA00
+#define USART1_TX_PORT                           gpioPortA
+#define USART1_TX_PIN                            0
+
 // [USART1]$
 
 // $[I2C1]
@@ -124,6 +140,18 @@
 // [MODEM]$
 
 // $[CUSTOM_PIN_NAME]
+#define INT_2_XL_PORT                            gpioPortB
+#define INT_2_XL_PIN                             1
+
+#define INT_1_XL_PORT                            gpioPortB
+#define INT_1_XL_PIN                             2
+
+#define CS_MAG_PORT                              gpioPortB
+#define CS_MAG_PIN                               3
+
+#define CS_XL_PORT                               gpioPortB
+#define CS_XL_PIN                                4
+
 // [CUSTOM_PIN_NAME]$
 
 #endif // PIN_CONFIG_H
