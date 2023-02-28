@@ -90,6 +90,16 @@
         <folder name="app_properties">
           <file name="app_properties.c" uri="studio:/sdk/platform/bootloader/app_properties/app_properties.c"/>
         </folder>
+        <folder name="security">
+          <file name="btl_crc16.c" uri="studio:/sdk/platform/bootloader/security/btl_crc16.c"/>
+          <file name="btl_crc32.c" uri="studio:/sdk/platform/bootloader/security/btl_crc32.c"/>
+          <file name="btl_crc32.h" uri="studio:/sdk/platform/bootloader/security/btl_crc32.h"/>
+          <file name="btl_crc16.h" uri="studio:/sdk/platform/bootloader/security/btl_crc16.h"/>
+        </folder>
+        <folder name="driver">
+          <file name="btl_driver_delay.c" uri="studio:/sdk/platform/bootloader/driver/btl_driver_delay.c"/>
+          <file name="btl_driver_delay.h" uri="studio:/sdk/platform/bootloader/driver/btl_driver_delay.h"/>
+        </folder>
         <folder name="api">
           <file name="btl_interface.c" uri="studio:/sdk/platform/bootloader/api/btl_interface.c"/>
           <file name="btl_interface_storage.c" uri="studio:/sdk/platform/bootloader/api/btl_interface_storage.c"/>
@@ -376,6 +386,15 @@
             <file name="sli_sleeptimer.h" uri="studio:/sdk/platform/service/sleeptimer/inc/sli_sleeptimer.h"/>
           </folder>
         </folder>
+        <folder name="udelay">
+          <folder name="src">
+            <file name="sl_udelay.c" uri="studio:/sdk/platform/service/udelay/src/sl_udelay.c"/>
+            <file name="sl_udelay_armv6m_gcc.S" uri="studio:/sdk/platform/service/udelay/src/sl_udelay_armv6m_gcc.S"/>
+          </folder>
+          <folder name="inc">
+            <file name="sl_udelay.h" uri="studio:/sdk/platform/service/udelay/inc/sl_udelay.h"/>
+          </folder>
+        </folder>
       </folder>
       <folder name="emdrv">
         <folder name="dmadrv">
@@ -416,6 +435,14 @@
             <file name="libnvm3_CM33_gcc.a" uri="studio:/sdk/platform/emdrv/nvm3/lib/libnvm3_CM33_gcc.a"/>
           </folder>
         </folder>
+        <folder name="spidrv">
+          <folder name="src">
+            <file name="spidrv.c" uri="studio:/sdk/platform/emdrv/spidrv/src/spidrv.c"/>
+          </folder>
+          <folder name="inc">
+            <file name="spidrv.h" uri="studio:/sdk/platform/emdrv/spidrv/inc/spidrv.h"/>
+          </folder>
+        </folder>
         <folder name="uartdrv">
           <folder name="src">
             <file name="uartdrv.c" uri="studio:/sdk/platform/emdrv/uartdrv/src/uartdrv.c"/>
@@ -433,6 +460,7 @@
           <file name="em_emu.c" uri="studio:/sdk/platform/emlib/src/em_emu.c"/>
           <file name="em_eusart.c" uri="studio:/sdk/platform/emlib/src/em_eusart.c"/>
           <file name="em_gpio.c" uri="studio:/sdk/platform/emlib/src/em_gpio.c"/>
+          <file name="em_iadc.c" uri="studio:/sdk/platform/emlib/src/em_iadc.c"/>
           <file name="em_ldma.c" uri="studio:/sdk/platform/emlib/src/em_ldma.c"/>
           <file name="em_msc.c" uri="studio:/sdk/platform/emlib/src/em_msc.c"/>
           <file name="em_prs.c" uri="studio:/sdk/platform/emlib/src/em_prs.c"/>
@@ -458,6 +486,7 @@
           <file name="em_eusart.h" uri="studio:/sdk/platform/emlib/inc/em_eusart.h"/>
           <file name="em_eusart_compat.h" uri="studio:/sdk/platform/emlib/inc/em_eusart_compat.h"/>
           <file name="em_gpio.h" uri="studio:/sdk/platform/emlib/inc/em_gpio.h"/>
+          <file name="em_iadc.h" uri="studio:/sdk/platform/emlib/inc/em_iadc.h"/>
           <file name="em_ldma.h" uri="studio:/sdk/platform/emlib/inc/em_ldma.h"/>
           <file name="em_msc.h" uri="studio:/sdk/platform/emlib/inc/em_msc.h"/>
           <file name="em_msc_compat.h" uri="studio:/sdk/platform/emlib/inc/em_msc_compat.h"/>
@@ -468,6 +497,11 @@
           <file name="em_system.h" uri="studio:/sdk/platform/emlib/inc/em_system.h"/>
           <file name="em_timer.h" uri="studio:/sdk/platform/emlib/inc/em_timer.h"/>
           <file name="em_usart.h" uri="studio:/sdk/platform/emlib/inc/em_usart.h"/>
+        </folder>
+        <folder name="init">
+          <folder name="gpio_simple">
+            <file name="sl_emlib_gpio_simple_init.h" uri="studio:/sdk/platform/emlib/init/gpio_simple/sl_emlib_gpio_simple_init.h"/>
+          </folder>
         </folder>
       </folder>
       <folder name="radio">
@@ -781,6 +815,7 @@
   <includePath uri="studio:/sdk/platform/emdrv/dmadrv/inc"/>
   <includePath uri="studio:/sdk/platform/emdrv/common/inc"/>
   <includePath uri="studio:/sdk/platform/emlib/inc"/>
+  <includePath uri="studio:/sdk/platform/emlib/init/gpio_simple"/>
   <includePath uri="studio:/sdk/platform/radio/rail_lib/plugin/fem_util"/>
   <includePath uri="studio:/sdk/app/bluetooth/common/gatt_service_device_information"/>
   <includePath uri="studio:/sdk/platform/emdrv/gpiointerrupt/inc"/>
@@ -812,7 +847,9 @@
   <includePath uri="studio:/sdk/platform/service/system/inc"/>
   <includePath uri="studio:/sdk/platform/service/sleeptimer/inc"/>
   <includePath uri="studio:/sdk/platform/security/sl_component/sl_protocol_crypto/src"/>
+  <includePath uri="studio:/sdk/platform/emdrv/spidrv/inc"/>
   <includePath uri="studio:/sdk/platform/emdrv/uartdrv/inc"/>
+  <includePath uri="studio:/sdk/platform/service/udelay/inc"/>
   <macroDefinition name="BGM220SC12WGA"/>
   <macroDefinition name="SL_APP_PROPERTIES"/>
   <macroDefinition name="BOOTLOADER_APPLOADER" value="1"/>

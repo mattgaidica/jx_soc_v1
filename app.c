@@ -38,18 +38,34 @@
 #include "em_usart.h"
 #include "em_cmu.h"
 #include "stdio.h"
+#include "sl_spidrv_instances.h"
+#include "sl_emlib_gpio_simple_init.h"
+
+// *** START IADC ***
+#include "em_iadc.h"
+#include "em_emu.h"
+#include "em_gpio.h"
+// Set HFRCOEM23 to lowest frequency (1MHz)
+//#define HFRCOEM23_FREQ          cmuHFRCOEM23Freq_1M0Hz
+// Set CLK_ADC to 10kHz (this corresponds to a sample rate of 1ksps)
+#define CLK_SRC_ADC_FREQ        20000000 // CLK_SRC_ADC
+#define CLK_ADC_FREQ            10000000 // CLK_ADC
+// When changing GPIO port/pins above, make sure to change xBUSALLOC macro's
+// accordingly.
+#define IADC_INPUT_BUS          ABUSALLOC
+#define IADC_INPUT_BUSALLOC     GPIO_CDBUSALLOC_CDEVEN0_ADC0
+// Stores latest ADC sample and converts to volts
+static volatile IADC_Result_t sample;
+static volatile double singleResult;
+// *** END IADC ***
 
 // The advertising set handle allocated from Bluetooth stack.
 static uint8_t advertising_set_handle = 0xff;
 static uint8_t connecting_handle = 0x00;
-static bd_addr new_device_id =
-  {
-    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } };
+static bd_addr new_device_id = { { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } };
 
-static const uint8_t serviceUUID[2] =
-  { 0x09, 0x18 }; // HTM service UUID : 0x1809
-static const uint8_t characteristicUUID[2] =
-  { 0x1c, 0x2A }; // Temperature Measurement characteristics : 0x2A1C
+static const uint8_t serviceUUID[2] = { 0x09, 0x18 }; // HTM service UUID : 0x1809
+static const uint8_t characteristicUUID[2] = { 0x1c, 0x2A }; // Temperature Measurement characteristics : 0x2A1C
 
 static uint32_t serviceHandle = 0xFFFFFFFF;
 static uint16_t characteristicHandle = 0xFFFF;
@@ -59,7 +75,7 @@ static bool discovering_service = false;
 static bool discovering_characteristic = false;
 
 static uint8_t numOfActiveConn = 0; // number of active connections <= MAX_CONNECTIONS
-static uint8_t CONNECT_TIMEOUT_SEC = 10;
+static uint8_t CONNECT_TIMEOUT_SEC = 5;
 static const char string_central[] = "CENTRAL";
 static const char string_peripheral[] = "PERIPHERAL";
 
@@ -76,356 +92,460 @@ static const char string_peripheral[] = "PERIPHERAL";
 #define DATA_PORT         gpioPortB
 #define DATA_PIN          0
 #define SPI_USART         USART1
-//#define SPI_LOCATION      USART_ROUTE_LOCATION_LOC1
 #define SPI_USART_CLOCK   cmuClock_USART1
-#define READ_CMD_BIT      8 // !! update
+#define READ_CMD_BIT      8
 
 sl_sleeptimer_timer_handle_t connection_timeout_timer, blink_timer;
 sl_bt_gap_phy_type_t scanning_phy = sl_bt_gap_1m_phy;
 sl_bt_gap_phy_type_t connection_phy = sl_bt_gap_1m_phy;
 uint8_t dev_index;
 
-typedef enum
-{
-  // Connection States (CS)
-  CS_CONNECTED,
-  CS_CONNECTING,
-  CS_CLOSED
+typedef enum {
+	// Connection States (CS)
+	CS_CONNECTED,
+	CS_CONNECTING,
+	CS_CLOSED
 } conn_state_t;
 
 /*------------CHANGE THE ABOVE ENUM USING THIS ONE-----------------*/
-typedef enum
-{
-  scanning,
-  opening,
-  discover_services,
-  discover_characteristics,
-  enable_indication,
-  running
+typedef enum {
+	scanning,
+	opening,
+	discover_services,
+	discover_characteristics,
+	enable_indication,
+	running
 } conn_state;
 /*----------------------------------------------------------------*/
 
-typedef enum
-{
-  // Connection Roles (CR)
-  CR_PERIPHERAL,
-  CR_CENTRAL
+typedef enum {
+	// Connection Roles (CR)
+	CR_PERIPHERAL,
+	CR_CENTRAL
 } conn_role_t;
 
 /* Struct to store the connecting device address, our device role in the connection, and connection state*/
-typedef struct
-{
-  bd_addr address;
-  uint8_t address_type;
-  conn_role_t conn_role;
-  conn_state_t conn_state;
-  uint8_t conn_handle;
+typedef struct {
+	bd_addr address;
+	uint8_t address_type;
+	conn_role_t conn_role;
+	conn_state_t conn_state;
+	uint8_t conn_handle;
 } device_info_t;
 
-// https://community.silabs.com/s/article/efm32-as-a-3-wire-spi-master?language=en_US
-void
-initSpi3Wire ()
-{
-  USART_InitSync_TypeDef usartConfig = USART_INITSYNC_DEFAULT;
+/**************************************************************************//**
+ * @brief  IADC Initializer
+ *****************************************************************************/
+// https: //github.com/tapandas/Silabs_peripheral_example/blob/51aacc51bfae6a3377b3f25ab2aec93a62457024/series2/iadc/iadc_single_em2/src/main_single_em2_xG21.c
+void initIADC(void) {
+	// Declare init structs
+	IADC_Init_t init = IADC_INIT_DEFAULT;
+	IADC_AllConfigs_t initAllConfigs = IADC_ALLCONFIGS_DEFAULT;
+	IADC_InitSingle_t initSingle = IADC_INITSINGLE_DEFAULT;
+	IADC_SingleInput_t initSingleInput = IADC_SINGLEINPUT_DEFAULT;
 
-  /* Enabling clock to USART and GPIO */
-  CMU_ClockEnable (SPI_USART_CLOCK, true);
-  CMU_ClockEnable (cmuClock_GPIO, true);
+	// Enable IADC0 clock branch
+	CMU_ClockEnable(cmuClock_IADC0, true);
+
+	// Reset IADC to reset configuration in case it has been modified
+	IADC_reset(IADC0);
+
+	// Configure IADC clock source for use while in EM2
+	CMU_ClockSelectSet(cmuClock_IADCCLK, cmuSelect_FSRCO);
+
+	// Modify init structs and initialize
+	init.warmup = iadcWarmupNormal;
+
+	// Set the HFSCLK prescale value here
+	init.srcClkPrescale = IADC_calcSrcClkPrescale(IADC0, CLK_SRC_ADC_FREQ, 0);
+
+	// Configuration 0 is used by both scan and single conversions by default
+	// Use unbuffered AVDD as reference
+	initAllConfigs.configs[0].reference = iadcCfgReferenceVddx;
+	initAllConfigs.configs[0].vRef = 3000;
+	initAllConfigs.configs[0].analogGain = iadcCfgAnalogGain1x;
+
+	// Divides CLK_SRC_ADC to set the CLK_ADC frequency for desired sample rate
+	initAllConfigs.configs[0].adcClkPrescale = IADC_calcAdcClkPrescale(
+	IADC0,
+	CLK_ADC_FREQ, 0, iadcCfgModeNormal, init.srcClkPrescale);
+
+	// Single initialization
+	initSingle.dataValidLevel = _IADC_SCANFIFOCFG_DVL_VALID1;
+
+	// Set conversions to run once
+	initSingle.triggerAction = iadcTriggerActionOnce;
+
+	// Configure Input sources for single ended conversion
+	initSingleInput.posInput = iadcPosInputPortCPin4;
+	initSingleInput.negInput = iadcNegInputGnd;
+
+	// Allocate the analog bus for ADC0 inputs
+	GPIO->IADC_INPUT_BUS |= IADC_INPUT_BUSALLOC;
+
+	// Initialize IADC
+	IADC_init(IADC0, &init, &initAllConfigs);
+
+	// Initialize Scan
+	IADC_initSingle(IADC0, &initSingle, &initSingleInput);
+
+	// Clear any previous interrupt flags
+	IADC_clearInt(IADC0, _IADC_IF_MASK);
+
+	// Enable single done interrupts
+	IADC_enableInt(IADC0, IADC_IEN_SINGLEDONE);
+
+	// Enable ADC interrupts
+	NVIC_ClearPendingIRQ(IADC_IRQn);
+	NVIC_EnableIRQ(IADC_IRQn);
+}
+
+void IADC_IRQHandler(void) {
+	uint32_t flags = IADC_getInt(IADC0);
+
+	// Read data from the FIFO
+	sample = IADC_pullSingleFifoResult(IADC0);
+
+	// For single-ended the result range is 0 to +Vref, i.e., 12 bits for the
+	// conversion value.
+	singleResult = sample.data * 3.0 / 0xFFF;
+
+	// Clear IADC interrupt flags
+	IADC_clearInt(IADC0, flags);
+}
+
+//void
+//TransferComplete (SPIDRV_Handle_t handle, Ecode_t transferStatus,
+//                  int itemsTransferred)
+//{
+//  if (transferStatus == ECODE_EMDRV_SPIDRV_OK)
+//    {
+//      uint8_t transferComplete = 1;
+//    }
+//}
+
+// https://community.silabs.com/s/article/efm32-as-a-3-wire-spi-master?language=en_US
+void initSpi3Wire() {
+	USART_InitSync_TypeDef usartConfig = USART_INITSYNC_DEFAULT;
+
+	/* Enabling clock to USART and GPIO */
+	CMU_ClockEnable(SPI_USART_CLOCK, true);
 
 //  usartConfig.clockMode = usartClockMode3;
-  usartConfig.msbf = true;
+//  usartConfig.msbf = true;
 
-  /* Configure USART as SPI master */
-  USART_InitSync (SPI_USART, &usartConfig);
+	/* Configure USART as SPI master */
+	USART_InitSync(SPI_USART, &usartConfig);
 
-  /* Enable internal lookback between TX and RX pin and enable Auto CS */
-  SPI_USART->CTRL |= USART_CTRL_LOOPBK; // USART_CTRL_AUTOCS
+	/* Enable internal lookback between TX and RX pin and enable Auto CS */
+	SPI_USART->CTRL |= USART_CTRL_LOOPBK; // USART_CTRL_AUTOCS
 
-  /* Configure GPIOs for SPI pins */
-  GPIO_PinModeSet (DATA_PORT, DATA_PIN, gpioModePushPull, 0);/* Data */
-  GPIO_PinModeSet (CLK_PORT, CLK_PIN, gpioModePushPull, 1);/* Clock */
-  GPIO_PinModeSet (CS_PORT, CS_XL_PIN, gpioModePushPull, 1);/* CS */
-  GPIO_PinModeSet (CS_PORT, CS_MAG_PIN, gpioModePushPull, 1);/* CS */
+	/* Configure GPIOs for SPI pins */
+	GPIO_PinModeSet(CS_PORT,
+	CS_XL_PIN, gpioModePushPull, 1);
+	GPIO_PinModeSet(CS_PORT,
+	CS_MAG_PIN, gpioModePushPull, 1);
+	GPIO_PinModeSet(CLK_PORT,
+	CLK_PIN, gpioModePushPull, 1);
+	GPIO_PinModeSet(DATA_PORT,
+	DATA_PIN, gpioModePushPull, 0);
 
-  USART_Enable (SPI_USART, usartEnable);
+	GPIO_PinOutSet(CS_PORT, CS_XL_PIN); // HIGH
+	GPIO_PinOutSet(CS_PORT, CS_MAG_PIN); // HIGH
+
+	USART_Enable(SPI_USART, usartEnable);
 }
 
-void
-writeSpiByte (uint8_t addr, uint8_t data)
-{
-  /* Write addr to TXDATA0 to be transmitted first, before TXDATA1 with data
-   * value is sent */
-  SPI_USART->TXDOUBLE = addr << _USART_TXDOUBLE_TXDATA0_SHIFT
-      | data << _USART_TXDOUBLE_TXDATA1_SHIFT;
+void writeSpiByte(uint8_t addr, uint8_t data) {
+	/* Write addr to TXDATA0 to be transmitted first, before TXDATA1 with data
+	 * value is sent */
+	SPI_USART->TXDOUBLE = addr << _USART_TXDOUBLE_TXDATA0_SHIFT
+			| data << _USART_TXDOUBLE_TXDATA1_SHIFT;
 
-  /* Wait for TX to complete */
-  while (!(USART_StatusGet (SPI_USART) & USART_STATUS_TXC))
-    ;
+	/* Wait for TX to complete */
+	while (!(USART_StatusGet(SPI_USART) & USART_STATUS_TXC))
+		;
 }
 
-uint8_t
-readSpiByte (uint8_t addr)
-{
-  SPI_USART->CMD = USART_CMD_RXBLOCKEN;/* Block RX while sending from master */
-  SPI_USART->CMD = USART_CMD_CLEARRX; /* Clear any old RX data */
+uint8_t readSpiByte(uint8_t addr) {
+	SPI_USART->CMD = USART_CMD_RXBLOCKEN;/* Block RX while sending from master */
+	SPI_USART->CMD = USART_CMD_CLEARRX; /* Clear any old RX data */
 
-  /* Write data for sending read command with address and reading back data
-   * TXDATA0 contains read command and address.
-   * TXDATA1 contains dummy data to be sent when clocking back read data.
-   * The TXTRIAT0 and UBRXAT0 bits will tri-state the TX pin and unblock RX
-   * after the first byte has been transmitted.
-   * The TXTRIAT and UBRXAT bits really only need to be set for TXDATA0, but
-   * because of errata USART_E101 on some devices, we set these bits for TXDATA1
-   * as well. This works also for devices that does not have this errata.
-   */
-  SPI_USART->TXDOUBLEX = (addr | 1 << READ_CMD_BIT)
-      << _USART_TXDOUBLEX_TXDATA0_SHIFT |
-  USART_TXDOUBLEX_TXTRIAT0 |
-  USART_TXDOUBLEX_UBRXAT0 | 0x00 << _USART_TXDOUBLEX_TXDATA1_SHIFT |
-  USART_TXDOUBLEX_TXTRIAT1 |
-  USART_TXDOUBLEX_UBRXAT1;
+	/* Write data for sending read command with address and reading back data
+	 * TXDATA0 contains read command and address.
+	 * TXDATA1 contains dummy data to be sent when clocking back read data.
+	 * The TXTRIAT0 and UBRXAT0 bits will tri-state the TX pin and unblock RX
+	 * after the first byte has been transmitted.
+	 * The TXTRIAT and UBRXAT bits really only need to be set for TXDATA0, but
+	 * because of errata USART_E101 on some devices, we set these bits for TXDATA1
+	 * as well. This works also for devices that does not have this errata.
+	 */
+	SPI_USART->TXDOUBLEX = (addr | 1 << READ_CMD_BIT)
+			<< _USART_TXDOUBLEX_TXDATA0_SHIFT |
+	USART_TXDOUBLEX_TXTRIAT0 |
+	USART_TXDOUBLEX_UBRXAT0 | 0x00 << _USART_TXDOUBLEX_TXDATA1_SHIFT |
+	USART_TXDOUBLEX_TXTRIAT1 |
+	USART_TXDOUBLEX_UBRXAT1;
 
-  /* Wait for valid RX DATA */
-  while (!(USART_StatusGet (SPI_USART) & USART_STATUS_RXDATAV))
-    ;
+	/* Wait for valid RX DATA */
+	while (!(USART_StatusGet(SPI_USART) & USART_STATUS_RXDATAV))
+		;
 
-  SPI_USART->CMD = USART_CMD_TXTRIDIS; /* Turn off TX tri-stating */
+	SPI_USART->CMD = USART_CMD_TXTRIDIS; /* Turn off TX tri-stating */
 
-  return SPI_USART->RXDATA;
+	return SPI_USART->RXDATA;
 }
 
 /**************************************************************************//**
  Callback for the sleeptimer. Since this function is called from interrupt context,
  only an external signal is set, as no other BGAPI calls are allowed in this case.
  *****************************************************************************/
-void
-sleep_timer_callback (sl_sleeptimer_timer_handle_t *handle, void *data)
-{
-  (void) data;
-  (void) handle;
-  sl_bt_external_signal (CONNECTION_TIMEOUT_EVT);
+void sleep_timer_callback(sl_sleeptimer_timer_handle_t *handle, void *data) {
+	(void) data;
+	(void) handle;
+	sl_bt_external_signal(CONNECTION_TIMEOUT_EVT);
 }
 
-void
-blink_timer_callback (sl_sleeptimer_timer_handle_t *handle, void *data)
-{
-  (void) data;
-  (void) handle;
-  sl_bt_external_signal (BLINK_TIMEOUT_EVT);
+void blink_timer_callback(sl_sleeptimer_timer_handle_t *handle, void *data) {
+	(void) data;
+	(void) handle;
+	sl_bt_external_signal(BLINK_TIMEOUT_EVT);
 }
 
 const char*
-get_conn_state (uint8_t state)
-{
-  switch (state)
-    {
-    case CS_CONNECTED:
-      return "CONNECTED";
-    case CS_CONNECTING:
-      return "CONNECTING";
-    case CS_CLOSED:
-      return "CLOSED";
-    default:
-      return "UNKNOWN";
-    }
+get_conn_state(uint8_t state) {
+	switch (state) {
+	case CS_CONNECTED:
+		return "CONNECTED";
+	case CS_CONNECTING:
+		return "CONNECTING";
+	case CS_CLOSED:
+		return "CLOSED";
+	default:
+		return "UNKNOWN";
+	}
 }
 
 static device_info_t device_list[MAX_CONNECTIONS];
 
 /* returns true if the remote device address is found in the list of connected device list */
 bool
-found_device (bd_addr bd_address)
-{
-  int i;
+found_device(bd_addr bd_address) {
+	int i;
 
-  for (i = 0; i < numOfActiveConn; i++)
-    {
-      if (memcmp (&device_list[i].address, &bd_address, sizeof(bd_addr)) == 0)
-        {
-          return true; // Found
-        }
-    }
+	for (i = 0; i < numOfActiveConn; i++) {
+		if (memcmp(&device_list[i].address, &bd_address, sizeof(bd_addr))
+				== 0) {
+			return true; // Found
+		}
+	}
 
-  return false; // Not found
+	return false; // Not found
 }
 
 static bool
-htm_service_found (struct sl_bt_evt_scanner_scan_report_s *pResp)
-{
+htm_service_found(struct sl_bt_evt_scanner_scan_report_s *pResp) {
 
-  // decoding advertising
-  int i = 0, j;
-  int adv_len;
-  int adv_type;
+	// decoding advertising
+	int i = 0, j;
+	int adv_len;
+	int adv_type;
 
-  while (i < pResp->data.len - 1)
-    {
-      adv_len = pResp->data.data[i];
-      adv_type = pResp->data.data[i + 1];
+	while (i < pResp->data.len - 1) {
+		adv_len = pResp->data.data[i];
+		adv_type = pResp->data.data[i + 1];
 
-      /* type 0x02 = Incomplete List of 16-bit Service Class UUIDs
-       type 0x03 = Complete List of 16-bit Service Class UUIDs */
-      if (adv_type == 0x02 || adv_type == 0x03)
-        {
-          // Look through all the UUIDs looking for HTM service
-          j = i + 2; // j holds the index of the first data
-          do
-            {
-              if (!memcmp (serviceUUID, &(pResp->data.data[j]),
-                           sizeof(serviceUUID)))
-                {
-                  return true;
-                }
-              j = j + 2;
-            }
-          while (j < i + adv_len);
-        }
-      i = i + adv_len + 1;
-    }
-  return false;
+		/* type 0x02 = Incomplete List of 16-bit Service Class UUIDs
+		 type 0x03 = Complete List of 16-bit Service Class UUIDs */
+		if (adv_type == 0x02 || adv_type == 0x03) {
+			// Look through all the UUIDs looking for HTM service
+			j = i + 2; // j holds the index of the first data
+			do {
+				if (!memcmp(serviceUUID, &(pResp->data.data[j]),
+						sizeof(serviceUUID))) {
+					return true;
+				}
+				j = j + 2;
+			} while (j < i + adv_len);
+		}
+		i = i + adv_len + 1;
+	}
+	return false;
 }
 
-uint8_t
-get_dev_index (uint8_t handle)
-{
-  uint8_t index;
+uint8_t get_dev_index(uint8_t handle) {
+	uint8_t index;
 
-  for (index = 0; index < numOfActiveConn; index++)
-    {
-      if (device_list[index].conn_handle == handle)
-        {
-          return index;
-        }
-    }
-  return 0xFF;
+	for (index = 0; index < numOfActiveConn; index++) {
+		if (device_list[index].conn_handle == handle) {
+			return index;
+		}
+	}
+	return 0xFF;
 }
 
 /* print bd_addr */
-void
-print_bd_addr (bd_addr bd_address)
-{
-  int i;
+void print_bd_addr(bd_addr bd_address) {
+	int i;
 
-  for (i = 5; i >= 0; i--)
-    {
-      app_log("%02X", bd_address.addr[i]);
+	for (i = 5; i >= 0; i--) {
+		app_log("%02X", bd_address.addr[i]);
 
-      if (i > 0)
-        app_log(":");
-    }
+		if (i > 0)
+			app_log(":");
+	}
 
 }
 
-void
-sl_app_log_stats (void)
-{
-  app_log("\r\n--------------- LIST of CONNECTED DEVICES ----------------\r\n");
-  app_log("==========================================================\r\n");
-  static bool print_header = true;
+void sl_app_log_stats(void) {
+	app_log(
+			"\r\n--------------- LIST of CONNECTED DEVICES ----------------\r\n");
+	app_log("==========================================================\r\n");
+	static bool print_header = true;
 
-  //print header
-  if (print_header == true)
-    {
-      app_log("ADDRESS            ROLE          HANDLE        STATE\r\n");
-    }
-  app_log("==========================================================\r\n");
+	//print header
+	if (print_header == true) {
+		app_log("ADDRESS            ROLE          HANDLE        STATE\r\n");
+	}
+	app_log("==========================================================\r\n");
 
-  int i;
-  for (i = 0; i < numOfActiveConn; i++)
-    {
+	int i;
+	for (i = 0; i < numOfActiveConn; i++) {
 
-      print_bd_addr (device_list[i].address);
-      app_log(
-          "  %-14s%-14d%-10s\r\n",
-          (device_list[i].conn_role == 0) ? string_peripheral : string_central,
-          device_list[i].conn_handle,
-          get_conn_state (device_list[i].conn_state));
+		print_bd_addr(device_list[i].address);
+		app_log("  %-14s%-14d%-10s\r\n",
+				(device_list[i].conn_role == 0) ?
+						string_peripheral : string_central,
+				device_list[i].conn_handle,
+				get_conn_state(device_list[i].conn_state));
 
-    }
-  app_log("\r\n");
+	}
+	app_log("\r\n");
 }
 
-static void
-get_stack_version (sl_bt_msg_t *evt)
-{
+static void get_stack_version(sl_bt_msg_t *evt) {
 
-  app_log("Stack version: v%d.%d.%d-b%d\r\n", evt->data.evt_system_boot.major,
-          evt->data.evt_system_boot.minor, evt->data.evt_system_boot.patch,
-          evt->data.evt_system_boot.build);
+	app_log("Stack version: v%d.%d.%d-b%d\r\n", evt->data.evt_system_boot.major,
+			evt->data.evt_system_boot.minor, evt->data.evt_system_boot.patch,
+			evt->data.evt_system_boot.build);
 }
 
-static void
-get_system_id (void)
-{
-  sl_status_t sc;
-  bd_addr address;
-  uint8_t address_type;
-  uint8_t system_id[8];
+static void get_system_id(void) {
+	sl_status_t sc;
+	bd_addr address;
+	uint8_t address_type;
+	uint8_t system_id[8];
 
-  // Extract unique ID from BT Address.
-  sc = sl_bt_system_get_identity_address (&address, &address_type);
-  app_assert_status(sc);
+	// Extract unique ID from BT Address.
+	sc = sl_bt_system_get_identity_address(&address, &address_type);
+	app_assert_status(sc);
 
-  // Pad and reverse unique ID to get System ID.
-  system_id[0] = address.addr[5];
-  system_id[1] = address.addr[4];
-  system_id[2] = address.addr[3];
-  system_id[3] = 0xFF;
-  system_id[4] = 0xFE;
-  system_id[5] = address.addr[2];
-  system_id[6] = address.addr[1];
-  system_id[7] = address.addr[0];
-  sc = sl_bt_gatt_server_write_attribute_value (gattdb_system_id, 0,
-                                                sizeof(system_id), system_id);
-  app_assert_status(sc);
+	// Pad and reverse unique ID to get System ID.
+	system_id[0] = address.addr[5];
+	system_id[1] = address.addr[4];
+	system_id[2] = address.addr[3];
+	system_id[3] = 0xFF;
+	system_id[4] = 0xFE;
+	system_id[5] = address.addr[2];
+	system_id[6] = address.addr[1];
+	system_id[7] = address.addr[0];
+	sc = sl_bt_gatt_server_write_attribute_value(gattdb_system_id, 0,
+			sizeof(system_id), system_id);
+	app_assert_status(sc);
 
-  char device_name_char[15] = "JXXXXXXXXXXXXX "; // add space for sprintf
-  sprintf (device_name_char + 2, "%X", (char) address.addr[5]);
-  sprintf (device_name_char + 4, "%X", (char) address.addr[4]);
-  sprintf (device_name_char + 6, "%X", (char) address.addr[3]);
-  sprintf (device_name_char + 8, "%X", (char) address.addr[2]);
-  sprintf (device_name_char + 10, "%X", (char) address.addr[1]);
-  sprintf (device_name_char + 12, "%X", (char) address.addr[0]);
+	char device_name_char[15] = "JXXXXXXXXXXXXX "; // add space for sprintf
+	sprintf(device_name_char + 2, "%X", (char) address.addr[5]);
+	sprintf(device_name_char + 4, "%X", (char) address.addr[4]);
+	sprintf(device_name_char + 6, "%X", (char) address.addr[3]);
+	sprintf(device_name_char + 8, "%X", (char) address.addr[2]);
+	sprintf(device_name_char + 10, "%X", (char) address.addr[1]);
+	sprintf(device_name_char + 12, "%X", (char) address.addr[0]);
 
-  uint8_t device_name_uint8[14];
-  memcpy (device_name_uint8, device_name_char, 14);
+	uint8_t device_name_uint8[14];
+	memcpy(device_name_uint8, device_name_char, 14);
 
-  sc = sl_bt_gatt_server_write_attribute_value (gattdb_device_name, 0,
-                                                sizeof(device_name_uint8),
-                                                device_name_uint8);
-  app_assert_status(sc);
+	sc = sl_bt_gatt_server_write_attribute_value(gattdb_device_name, 0,
+			sizeof(device_name_uint8), device_name_uint8);
+	app_assert_status(sc);
 
-  app_log("Local BT %s address: %02X:%02X:%02X:%02X:%02X:%02X\r\n",
-          address_type ? "static random" : "public device", address.addr[5],
-          address.addr[4], address.addr[3], address.addr[2], address.addr[1],
-          address.addr[0]);
+	app_log("Local BT %s address: %02X:%02X:%02X:%02X:%02X:%02X\r\n",
+			address_type ? "static random" : "public device", address.addr[5],
+			address.addr[4], address.addr[3], address.addr[2], address.addr[1],
+			address.addr[0]);
 
 }
 /**************************************************************************//**
  * Application Init.
  *****************************************************************************/
-SL_WEAK void
-app_init (void)
-{
-  sl_status_t sc;
-  sl_led_init (&sl_led_led0);
-  /* Set connection timeout timer */
-  sc = sl_sleeptimer_start_periodic_timer (&blink_timer, 1 * 32768,
-                                           blink_timer_callback, NULL, 0, 0);
-  app_assert_status(sc);
+SL_WEAK void app_init(void) {
+	initIADC();
+
+	sl_led_init(&sl_led_led0);
+
+	sl_status_t sc;
+	sc = sl_sleeptimer_start_periodic_timer(&blink_timer, 1 * 32768,
+			blink_timer_callback, NULL, 0, 0);
+	app_assert_status(sc);
+
+	// Initialize an SPI driver instance.
+//  uint8_t txBuffer[2] =
+//    { 0x0F, 0xC0 };
+//  uint8_t rxBuffer[2];
+
+	// init
+//  while (1)
+//    {
+//      SPIDRV_MTransmitB (sl_spidrv_spi0_handle, txBuffer, 2);
+//      SPIDRV_MReceiveB (sl_spidrv_spi0_handle, rxBuffer, 1);
+//      if (rxBuffer[0] == 0)
+//        {
+//          break;
+//        }
+//    }
+
+	// unlock
+//  uint8_t chars[3];
+//  chars[0] = 31;
+//  chars[1] = 160;
+//  chars[2] = 0;
+//  SPIDRV_MTransmitB (sl_spidrv_spi0_handle, chars, 3);
+//
+//  txBuffer[0] = 0x9F;
+//  txBuffer[1] = 0x00; // dummy
+//  while (1)
+//    {
+//      SPIDRV_MTransmitB (sl_spidrv_spi0_handle, txBuffer, 2);
+//      SPIDRV_MReceiveB (sl_spidrv_spi0_handle, rxBuffer, 2);
+//      SPIDRV_MTransferB (sl_spidrv_spi0_handle, txBuffer, rxBuffer, 2);
+//    }
+
+//  initSpi3Wire ();
+	//  uint8_t whoami_XL = 0x0F;
+	//  uint8_t whoami_MG = 0x4F;
+	//  uint8_t rxByte;
+	//  while (1)
+	//    {
+	//      // looking for 0x33
+	//      GPIO_PinOutClear (CS_PORT, CS_XL_PIN); // LOW
+	//      rxByte = readSpiByte (whoami_XL);
+	//      GPIO_PinOutSet (CS_PORT, CS_XL_PIN); // HIGH
+	//
+	//      // looking for
+	//      GPIO_PinOutClear (CS_PORT, CS_MAG_PIN); // LOW
+	//      rxByte = readSpiByte (whoami_MG);
+	//      GPIO_PinOutSet (CS_PORT, CS_MAG_PIN); // HIGH
+	//    }
 }
 
 /**************************************************************************//**
  * Application Process Action.
  *****************************************************************************/
-SL_WEAK void
-app_process_action (void)
-{
-  /////////////////////////////////////////////////////////////////////////////
-  // Put your additional application code here!                              //
-  // This is called infinitely.                                              //
-  // Do not call blocking functions from here!                               //
-  /////////////////////////////////////////////////////////////////////////////
+SL_WEAK void app_process_action(void) {
+	/////////////////////////////////////////////////////////////////////////////
+	// Put your additional application code here!                              //
+	// This is called infinitely.                                              //
+	// Do not call blocking functions from here!                               //
+	/////////////////////////////////////////////////////////////////////////////
 }
 
 /**************************************************************************//**
@@ -434,382 +554,361 @@ app_process_action (void)
  *
  * @param[in] evt Event coming from the Bluetooth stack.
  *****************************************************************************/
-void
-sl_bt_on_event (sl_bt_msg_t *evt)
-{
-  sl_status_t sc;
+void sl_bt_on_event(sl_bt_msg_t *evt) {
+	sl_status_t sc;
 
-  switch (SL_BT_MSG_ID(evt->header))
-    {
-    // -------------------------------
-    // This event indicates the device has started and the radio is ready.
-    // Do not call any stack command before receiving this boot event!
-    case sl_bt_evt_system_boot_id:
+	switch (SL_BT_MSG_ID(evt->header)) {
+	// -------------------------------
+	// This event indicates the device has started and the radio is ready.
+	// Do not call any stack command before receiving this boot event!
+	case sl_bt_evt_system_boot_id:
 
-      app_log(
-          "\r\n*** MULTIPLE CENTRAL MULTIPLE PERIPHERAL DUAL TOPOLOGY EXAMPLE ***\r\n\n");
-      get_stack_version (evt);
-      get_system_id (); // also update device name
+		app_log(
+				"\r\n*** MULTIPLE CENTRAL MULTIPLE PERIPHERAL DUAL TOPOLOGY EXAMPLE ***\r\n\n");
+		get_stack_version(evt);
+		get_system_id(); // also update device name
 
-      sc = sl_bt_scanner_set_parameters (sl_bt_scanner_scan_mode_passive, 20,
-                                         10); // use instead
-      app_assert_status(sc);
+		sc = sl_bt_scanner_set_parameters(sl_bt_scanner_scan_mode_passive, 20,
+				10); // use instead
+		app_assert_status(sc);
 
-      // Start scanning
-      sc = sl_bt_scanner_start (gap_1m_phy, scanner_discover_generic);
-      app_assert_status_f(sc, "Failed to start discovery #1\n");
+		// Start scanning
+		sc = sl_bt_scanner_start(gap_1m_phy, scanner_discover_generic);
+		app_assert_status_f(sc, "Failed to start discovery #1\n");
 
-      // Create an advertising set.
-      sc = sl_bt_advertiser_create_set (&advertising_set_handle);
-      app_assert_status(sc);
+		// Create an advertising set.
+		sc = sl_bt_advertiser_create_set(&advertising_set_handle);
+		app_assert_status(sc);
 
-      // Set advertising interval to 100ms.
-      sc = sl_bt_advertiser_set_timing (advertising_set_handle, 160, // min. adv. interval (milliseconds * 1.6)
-                                        160, // max. adv. interval (milliseconds * 1.6)
-                                        0,   // adv. duration
-                                        0);  // max. num. adv. events
-      app_assert_status(sc);
-      // Start general advertising and enable connections.
+		// Set advertising interval to 100ms.
+		sc = sl_bt_advertiser_set_timing(advertising_set_handle, 160, // min. adv. interval (milliseconds * 1.6)
+				160, // max. adv. interval (milliseconds * 1.6)
+				0,   // adv. duration
+				0);  // max. num. adv. events
+		app_assert_status(sc);
+		// Start general advertising and enable connections.
 
-      sc = sl_bt_legacy_advertiser_generate_data (
-          advertising_set_handle, sl_bt_advertiser_general_discoverable);
-      sc = sl_bt_legacy_advertiser_start (advertising_set_handle,
-                                          sl_bt_legacy_advertiser_connectable);
+		sc = sl_bt_legacy_advertiser_generate_data(advertising_set_handle,
+				sl_bt_advertiser_general_discoverable);
+		sc = sl_bt_legacy_advertiser_start(advertising_set_handle,
+				sl_bt_legacy_advertiser_connectable);
 
-      app_assert_status(sc);
-      break;
+		app_assert_status(sc);
+		break;
 
-      // -------------------------------
-      // This event is generated when an advertisement packet or a scan response
-      // is received from a peripheral device
-    case sl_bt_evt_scanner_scan_report_id:
+		// -------------------------------
+		// This event is generated when an advertisement packet or a scan response
+		// is received from a peripheral device
+	case sl_bt_evt_scanner_scan_report_id:
 
-      /* Exit event if max connection is reached */
-      if (numOfActiveConn == MAX_CONNECTIONS)
-        break;
+		/* Exit event if max connection is reached */
+		if (numOfActiveConn == MAX_CONNECTIONS)
+			break;
 
-      /* Exit if device is in connection process (processing another scan response),
-       * or service, or characterstics discovery */
-      if (connecting || enabling_indications || discovering_service
-          || discovering_characteristic)
-        break;
+		/* Exit if device is in connection process (processing another scan response),
+		 * or service, or characterstics discovery */
+		if (connecting || enabling_indications || discovering_service
+				|| discovering_characteristic)
+			break;
 
-      /* Exit event if service is not in the scan response*/
-      if (!htm_service_found (&(evt->data.evt_scanner_scan_report)))
-        break;
+		/* Exit event if service is not in the scan response*/
+		if (!htm_service_found(&(evt->data.evt_scanner_scan_report)))
+			break;
 
-      /* Exit event if the scan response is triggered by a device already in the connection list. */
-      if (found_device (evt->data.evt_scanner_scan_report.address))
-        break;
+		/* Exit event if the scan response is triggered by a device already in the connection list. */
+		if (found_device(evt->data.evt_scanner_scan_report.address))
+			break;
 
-      /* Max connection isn't reached, device is not in a connection process, new HTM service is found.
-       * Continue ...*/
+		/* Max connection isn't reached, device is not in a connection process, new HTM service is found.
+		 * Continue ...*/
 
-      /* Initiate connection */
-      connecting = true;
-      sc = sl_bt_connection_open (
-          evt->data.evt_scanner_scan_report.address,
-          evt->data.evt_scanner_scan_report.address_type, connection_phy,
-          &connecting_handle);
-      app_assert_status(sc);
+		/* Initiate connection */
+		connecting = true;
+		sc = sl_bt_connection_open(evt->data.evt_scanner_scan_report.address,
+				evt->data.evt_scanner_scan_report.address_type, connection_phy,
+				&connecting_handle);
+		app_assert_status(sc);
 
-      /* Update device list. If connection doesn't succeed (due to timeout) the device will be removed from the list in connection closed event handler*/
-      device_list[numOfActiveConn].address =
-          evt->data.evt_scanner_scan_report.address;
-      device_list[numOfActiveConn].address_type =
-          evt->data.evt_scanner_scan_report.address_type;
-      device_list[numOfActiveConn].conn_handle = connecting_handle;
-      device_list[numOfActiveConn].conn_role = CR_PERIPHERAL; // connection role of the remote device
-      device_list[numOfActiveConn].conn_state = CS_CONNECTING;
+		/* Update device list. If connection doesn't succeed (due to timeout) the device will be removed from the list in connection closed event handler*/
+		device_list[numOfActiveConn].address =
+				evt->data.evt_scanner_scan_report.address;
+		device_list[numOfActiveConn].address_type =
+				evt->data.evt_scanner_scan_report.address_type;
+		device_list[numOfActiveConn].conn_handle = connecting_handle;
+		device_list[numOfActiveConn].conn_role = CR_PERIPHERAL; // connection role of the remote device
+		device_list[numOfActiveConn].conn_state = CS_CONNECTING;
 
-      /* Set connection timeout timer */
-      sc = sl_sleeptimer_start_timer (&connection_timeout_timer,
-                                      CONNECT_TIMEOUT_SEC * 32768,
-                                      sleep_timer_callback, NULL, 0, 0);
-      app_assert_status(sc);
+		/* Set connection timeout timer */
+		sc = sl_sleeptimer_start_timer(&connection_timeout_timer,
+				CONNECT_TIMEOUT_SEC * 32768, sleep_timer_callback, NULL, 0, 0);
+		app_assert_status(sc);
 
-      /* Increment numOfActiveConn */
-      numOfActiveConn++;
-      break;
+		/* Increment numOfActiveConn */
+		numOfActiveConn++;
+		break;
 
-    case sl_bt_evt_system_external_signal_id:
-      if (evt->data.evt_system_external_signal.extsignals
-          & CONNECTION_TIMEOUT_EVT)
-        {
-          /* Connection fail safe timer triggered, cancel connection procedure and restart scanning/discovery */
-          app_log("Connection timeout!\r\n");
-          app_log("Cancel connection with device :");
+	case sl_bt_evt_system_external_signal_id:
+		if (evt->data.evt_system_external_signal.extsignals
+				& CONNECTION_TIMEOUT_EVT) {
+			/* Connection fail safe timer triggered, cancel connection procedure and restart scanning/discovery */
+			app_log("Connection timeout!\r\n");
+			app_log("Cancel connection with device :");
 
-          uint8_t dev_index;
-          dev_index = get_dev_index (connecting_handle);
-          print_bd_addr (device_list[dev_index].address);
-          app_log("\r\n");
-          app_log("Handle .......: #%d\r\n", connecting_handle);
+			uint8_t dev_index;
+			dev_index = get_dev_index(connecting_handle);
+			print_bd_addr(device_list[dev_index].address);
+			app_log("\r\n");
+			app_log("Handle .......: #%d\r\n", connecting_handle);
 
-          // CANCEL CONNECTION
-          sc = sl_bt_connection_close (connecting_handle);
-          app_assert_status(sc);
-          connecting = false;
-        }
-      else if (evt->data.evt_system_external_signal.extsignals
-          & BLINK_TIMEOUT_EVT)
-        {
-          sl_led_toggle (&sl_led_led0);
-        }
-      break;
+			// CANCEL CONNECTION
+			sc = sl_bt_connection_close(connecting_handle);
+			app_assert_status(sc);
+			connecting = false;
+		} else if (evt->data.evt_system_external_signal.extsignals
+				& BLINK_TIMEOUT_EVT) {
 
-      // -------------------------------
-      // This event indicates that a new connection was opened.
-    case sl_bt_evt_connection_opened_id:
-      app_log("Connecting ...\r\n");
+			// Start single
+			IADC_command(IADC0, iadcCmdStartSingle);
+			sl_led_toggle(&sl_led_led0);
+		}
+		break;
 
-      /* If connection role is CENTRAL ...*/
-      if (evt->data.evt_connection_opened.master == CR_CENTRAL)
-        {
-          /* Cancel fail safe connection timer */
-          sc = sl_sleeptimer_stop_timer (&connection_timeout_timer);
-          app_assert_status(sc);
-          app_log("Connection timeout is cleared.\r\n");
+		// -------------------------------
+		// This event indicates that a new connection was opened.
+	case sl_bt_evt_connection_opened_id:
+		app_log("Connecting ...\r\n");
 
-          /* Start discovering the remote GATT database */
-          sc = sl_bt_gatt_discover_primary_services_by_uuid (
-              evt->data.evt_connection_opened.connection, sizeof(serviceUUID),
-              serviceUUID);
-          app_assert_status(sc);
+		/* If connection role is CENTRAL ...*/
+		if (evt->data.evt_connection_opened.master == CR_CENTRAL) {
+			/* Cancel fail safe connection timer */
+			sc = sl_sleeptimer_stop_timer(&connection_timeout_timer);
+			app_assert_status(sc);
+			app_log("Connection timeout is cleared.\r\n");
 
-          discovering_service = true;
+			/* Start discovering the remote GATT database */
+			sc = sl_bt_gatt_discover_primary_services_by_uuid(
+					evt->data.evt_connection_opened.connection,
+					sizeof(serviceUUID), serviceUUID);
+			app_assert_status(sc);
 
-          /* connection process completed. */
-          connecting = false;
-        }
+			discovering_service = true;
 
-      /* else if connection role is PERIPHERAL ...*/
-      else if (evt->data.evt_connection_opened.master == CR_PERIPHERAL)
-        {
+			/* connection process completed. */
+			connecting = false;
+		}
 
-          /* update device list */
-          device_list[numOfActiveConn].address =
-              evt->data.evt_connection_opened.address;
-          device_list[numOfActiveConn].address_type =
-              evt->data.evt_connection_opened.address_type;
-          device_list[numOfActiveConn].conn_handle =
-              evt->data.evt_connection_opened.connection;
-          device_list[numOfActiveConn].conn_role = CR_CENTRAL; // connection role of the remote device
+		/* else if connection role is PERIPHERAL ...*/
+		else if (evt->data.evt_connection_opened.master == CR_PERIPHERAL) {
 
-          /* Increment numOfActiveConn. */
-          numOfActiveConn++;
-        }
+			/* update device list */
+			device_list[numOfActiveConn].address =
+					evt->data.evt_connection_opened.address;
+			device_list[numOfActiveConn].address_type =
+					evt->data.evt_connection_opened.address_type;
+			device_list[numOfActiveConn].conn_handle =
+					evt->data.evt_connection_opened.connection;
+			device_list[numOfActiveConn].conn_role = CR_CENTRAL; // connection role of the remote device
 
-      /* Update device connection state. common for both master and slave roles*/
-      device_list[numOfActiveConn - 1].conn_state = CS_CONNECTING;
+			/* Increment numOfActiveConn. */
+			numOfActiveConn++;
+		}
 
-      /* Advertising stops when connection is opened. Re-start advertising */
-      if (numOfActiveConn == MAX_CONNECTIONS)
-        {
-          app_log("Maximum number of allowed connections reached.\r\n");
-          app_log(
-              "Stop scanning but continue advertising in non-connectable mode.\r\n");
-          sc = sl_bt_scanner_stop ();
-          app_assert_status(sc);
+		/* Update device connection state. common for both master and slave roles*/
+		device_list[numOfActiveConn - 1].conn_state = CS_CONNECTING;
 
-          sc = sl_bt_legacy_advertiser_generate_data (
-              advertising_set_handle, sl_bt_advertiser_general_discoverable);
-          sc = sl_bt_legacy_advertiser_start (
-              advertising_set_handle, sl_bt_legacy_advertiser_connectable);
-          app_assert_status(sc);
-        }
-      else
-        {
-          /* Max connection not reached. Re-start advertising in connectable mode */
-          sc = sl_bt_legacy_advertiser_generate_data (
-              advertising_set_handle, sl_bt_advertiser_general_discoverable);
-          sc = sl_bt_legacy_advertiser_start (
-              advertising_set_handle, sl_bt_legacy_advertiser_connectable);
-          app_assert_status(sc);
-        }
-      break;
+		/* Advertising stops when connection is opened. Re-start advertising */
+		if (numOfActiveConn == MAX_CONNECTIONS) {
+			app_log("Maximum number of allowed connections reached.\r\n");
+			app_log(
+					"Stop scanning but continue advertising in non-connectable mode.\r\n");
+			sc = sl_bt_scanner_stop();
+			app_assert_status(sc);
 
-      // This event ensures connection has been established.
-    case sl_bt_evt_connection_parameters_id:
-      dev_index = get_dev_index (
-          evt->data.evt_connection_parameters.connection);
-      device_list[dev_index].conn_state = CS_CONNECTED;
+			sc = sl_bt_legacy_advertiser_generate_data(advertising_set_handle,
+					sl_bt_advertiser_general_discoverable);
+			sc = sl_bt_legacy_advertiser_start(advertising_set_handle,
+					sl_bt_legacy_advertiser_connectable);
+			app_assert_status(sc);
+		} else {
+			/* Max connection not reached. Re-start advertising in connectable mode */
+			sc = sl_bt_legacy_advertiser_generate_data(advertising_set_handle,
+					sl_bt_advertiser_general_discoverable);
+			sc = sl_bt_legacy_advertiser_start(advertising_set_handle,
+					sl_bt_legacy_advertiser_connectable);
+			app_assert_status(sc);
+		}
+		break;
 
-      /* If new connection is not reported ... */
-      if (memcmp (&new_device_id, &device_list[dev_index].address,
-                  sizeof(bd_addr)) != 0)
-        {
+		// This event ensures connection has been established.
+	case sl_bt_evt_connection_parameters_id:
+		dev_index = get_dev_index(
+				evt->data.evt_connection_parameters.connection);
+		device_list[dev_index].conn_state = CS_CONNECTED;
 
-          memcpy (&new_device_id, &device_list[dev_index].address,
-                  sizeof(bd_addr));
-          app_log("\r\nNEW CONNECTION ESTABLISHED \r\n");
-          app_log("Device ID .................: ");
-          print_bd_addr (device_list[numOfActiveConn - 1].address);
-          app_log("\r\n");
-          app_log(
-              "Role ......................: %s\r\n",
-              (device_list[dev_index].conn_role == CR_PERIPHERAL) ?
-                  string_peripheral : string_central);
-          app_log("Handle ....................: %d\r\n",
-                  device_list[dev_index].conn_handle);
-          app_log("Number of connected devices: %d\r\n", numOfActiveConn);
-          app_log("Available connections .....: %d\r\n",
-                  MAX_CONNECTIONS - numOfActiveConn);
+		/* If new connection is not reported ... */
+		if (memcmp(&new_device_id, &device_list[dev_index].address,
+				sizeof(bd_addr)) != 0) {
 
-          /* Print connection summary*/
-          sl_app_log_stats ();
+			memcpy(&new_device_id, &device_list[dev_index].address,
+					sizeof(bd_addr));
+			app_log("\r\nNEW CONNECTION ESTABLISHED \r\n");
+			app_log("Device ID .................: ");
+			print_bd_addr(device_list[numOfActiveConn - 1].address);
+			app_log("\r\n");
+			app_log("Role ......................: %s\r\n",
+					(device_list[dev_index].conn_role == CR_PERIPHERAL) ?
+							string_peripheral : string_central);
+			app_log("Handle ....................: %d\r\n",
+					device_list[dev_index].conn_handle);
+			app_log("Number of connected devices: %d\r\n", numOfActiveConn);
+			app_log("Available connections .....: %d\r\n",
+					MAX_CONNECTIONS - numOfActiveConn);
 
-        }
-      break;
+			/* Print connection summary*/
+			sl_app_log_stats();
 
-    case sl_bt_evt_gatt_service_id:
-      /* save the service handle for the Health Thermometer service */
-      serviceHandle = evt->data.evt_gatt_service.service;
-      break;
+		}
+		break;
 
-    case sl_bt_evt_gatt_characteristic_id:
-      /* save the characteristic handle for the Temperature Measurement characteristic */
-      characteristicHandle = evt->data.evt_gatt_characteristic.characteristic;
-      break;
+	case sl_bt_evt_gatt_service_id:
+		/* save the service handle for the Health Thermometer service */
+		serviceHandle = evt->data.evt_gatt_service.service;
+		break;
 
-    case sl_bt_evt_gatt_procedure_completed_id:
-      /* if service discovery completed */
-      if (discovering_service)
-        {
-          discovering_service = false;
-          /* discover Temperature Measurement characteristic */
-          sc = sl_bt_gatt_discover_characteristics_by_uuid (
-              evt->data.evt_gatt_procedure_completed.connection, serviceHandle,
-              sizeof(characteristicUUID), characteristicUUID);
-          app_assert_status(sc);
-          discovering_characteristic = true;
-        }
-      /* if characteristic discovery completed */
-      else if (discovering_characteristic)
-        {
-          discovering_characteristic = false;
-          /* enable indications on the Temperature Measurement characteristic */
-          sc = sl_bt_gatt_set_characteristic_notification (
-              evt->data.evt_gatt_procedure_completed.connection,
-              characteristicHandle, gatt_indication);
-          app_assert_status(sc);
-          enabling_indications = true;
-        }
-      else if (enabling_indications)
-        {
-          enabling_indications = 0;
+	case sl_bt_evt_gatt_characteristic_id:
+		/* save the characteristic handle for the Temperature Measurement characteristic */
+		characteristicHandle = evt->data.evt_gatt_characteristic.characteristic;
+		break;
 
-        }
-      break;
+	case sl_bt_evt_gatt_procedure_completed_id:
+		/* if service discovery completed */
+		if (discovering_service) {
+			discovering_service = false;
+			/* discover Temperature Measurement characteristic */
+			sc = sl_bt_gatt_discover_characteristics_by_uuid(
+					evt->data.evt_gatt_procedure_completed.connection,
+					serviceHandle, sizeof(characteristicUUID),
+					characteristicUUID);
+			app_assert_status(sc);
+			discovering_characteristic = true;
+		}
+		/* if characteristic discovery completed */
+		else if (discovering_characteristic) {
+			discovering_characteristic = false;
+			/* enable indications on the Temperature Measurement characteristic */
+			sc = sl_bt_gatt_set_characteristic_notification(
+					evt->data.evt_gatt_procedure_completed.connection,
+					characteristicHandle, gatt_indication);
+			app_assert_status(sc);
+			enabling_indications = true;
+		} else if (enabling_indications) {
+			enabling_indications = 0;
 
-    case sl_bt_evt_gatt_characteristic_value_id:
-      /* if a temperature value was received from a slave... */
-      if (evt->data.evt_gatt_characteristic_value.att_opcode
-          == gatt_handle_value_indication)
-        {
-          uint16_t temp_measurement_char;
+		}
+		break;
 
-          switch ((evt->data.evt_gatt_characteristic_value.connection - 1) % 8)
-            {
-            case 0:
-              temp_measurement_char = gattdb_temperature_measurement_0;
-              break;
-            case 1:
-              temp_measurement_char = gattdb_temperature_measurement_1;
-              break;
-            case 2:
-              temp_measurement_char = gattdb_temperature_measurement_2;
-              break;
-            case 3:
-              temp_measurement_char = gattdb_temperature_measurement_3;
-              break;
-            case 4:
-              temp_measurement_char = gattdb_temperature_measurement_4;
-              break;
-            case 5:
-              temp_measurement_char = gattdb_temperature_measurement_5;
-              break;
-            case 6:
-              temp_measurement_char = gattdb_temperature_measurement_6;
-              break;
-            case 7:
-              temp_measurement_char = gattdb_temperature_measurement_7;
-              break;
-            default:
-              temp_measurement_char = gattdb_temperature_measurement_0;
-              break;
-            }
+	case sl_bt_evt_gatt_characteristic_value_id:
+		/* if a temperature value was received from a slave... */
+		if (evt->data.evt_gatt_characteristic_value.att_opcode
+				== gatt_handle_value_indication) {
+			uint16_t temp_measurement_char;
 
-          /* Acknowledge indication */
-          sc = sl_bt_gatt_send_characteristic_confirmation (
-              evt->data.evt_gatt_characteristic_value.connection);
-          app_assert_status(sc);
+			switch ((evt->data.evt_gatt_characteristic_value.connection - 1) % 8) {
+			case 0:
+				temp_measurement_char = gattdb_temperature_measurement_0;
+				break;
+			case 1:
+				temp_measurement_char = gattdb_temperature_measurement_1;
+				break;
+			case 2:
+				temp_measurement_char = gattdb_temperature_measurement_2;
+				break;
+			case 3:
+				temp_measurement_char = gattdb_temperature_measurement_3;
+				break;
+			case 4:
+				temp_measurement_char = gattdb_temperature_measurement_4;
+				break;
+			case 5:
+				temp_measurement_char = gattdb_temperature_measurement_5;
+				break;
+			case 6:
+				temp_measurement_char = gattdb_temperature_measurement_6;
+				break;
+			case 7:
+				temp_measurement_char = gattdb_temperature_measurement_7;
+				break;
+			default:
+				temp_measurement_char = gattdb_temperature_measurement_0;
+				break;
+			}
 
-          /* Send notifications or indications to all connected remote GATT clients */
-          sc = sl_bt_gatt_server_notify_all (
-              temp_measurement_char,
-              evt->data.evt_gatt_characteristic_value.value.len,
-              evt->data.evt_gatt_characteristic_value.value.data);
-          app_assert_status(sc);
-        }
-      break;
-      // -------------------------------
-      // This event indicates that a connection was closed.
-    case sl_bt_evt_connection_closed_id:
-      app_log("\r\nCONNECTION CLOSED \r\n");
-      // handle of the closed connection
-      uint8_t closed_handle = evt->data.evt_connection_closed.connection;
-      dev_index = get_dev_index (closed_handle);
-      app_log("Device ");
-      print_bd_addr (device_list[dev_index].address);
-      app_log(" left the connection::0x%04X\r\n",
-              evt->data.evt_connection_closed.reason);
+			/* Acknowledge indication */
+			sc = sl_bt_gatt_send_characteristic_confirmation(
+					evt->data.evt_gatt_characteristic_value.connection);
+			app_assert_status(sc);
 
-      uint8_t i;
-      for (i = dev_index; i < numOfActiveConn - 1; i++)
-        {
-          device_list[i] = device_list[i + 1];
-        }
+			/* Send notifications or indications to all connected remote GATT clients */
+			sc = sl_bt_gatt_server_notify_all(temp_measurement_char,
+					evt->data.evt_gatt_characteristic_value.value.len,
+					evt->data.evt_gatt_characteristic_value.value.data);
+			app_assert_status(sc);
+		}
+		break;
+		// -------------------------------
+		// This event indicates that a connection was closed.
+	case sl_bt_evt_connection_closed_id:
+		app_log("\r\nCONNECTION CLOSED \r\n");
+		// handle of the closed connection
+		uint8_t closed_handle = evt->data.evt_connection_closed.connection;
+		dev_index = get_dev_index(closed_handle);
+		app_log("Device ");
+		print_bd_addr(device_list[dev_index].address);
+		app_log(" left the connection::0x%04X\r\n",
+				evt->data.evt_connection_closed.reason);
 
-      if (numOfActiveConn > 0)
-        {
-          numOfActiveConn--;
-        }
+		uint8_t i;
+		for (i = dev_index; i < numOfActiveConn - 1; i++) {
+			device_list[i] = device_list[i + 1];
+		}
 
-      // print list of remaining connections
-      sl_app_log_stats ();
+		if (numOfActiveConn > 0) {
+			numOfActiveConn--;
+		}
 
-      app_log("Number of active connections ...: %d\r\n", numOfActiveConn);
-      app_log("Available connections ..........: %d\r\n",
-              MAX_CONNECTIONS - numOfActiveConn);
+		// print list of remaining connections
+		sl_app_log_stats();
 
-      /* If we have one less available connection than the maximum allowed...*/
-      if (numOfActiveConn == MAX_CONNECTIONS - 1)
-        {
-          // start scanning,
-          sc = sl_bt_scanner_start (gap_1m_phy, scanner_discover_generic);
-          app_assert_status_f(sc, "Failed to start discovery #1\n");
-          app_log("Scanning restarted.\r\n");
+		app_log("Number of active connections ...: %d\r\n", numOfActiveConn);
+		app_log("Available connections ..........: %d\r\n",
+				MAX_CONNECTIONS - numOfActiveConn);
 
-          // and also start advertising as CONNECTABLE
-          sc = sl_bt_legacy_advertiser_generate_data (
-              advertising_set_handle, sl_bt_advertiser_general_discoverable);
-          sc = sl_bt_legacy_advertiser_start (
-              advertising_set_handle, sl_bt_legacy_advertiser_connectable);
-          app_assert_status(sc);
-          app_log("Advertising restarted in CONNECTABLE mode.\r\n");
+		/* If we have one less available connection than the maximum allowed...*/
+		if (numOfActiveConn == MAX_CONNECTIONS - 1) {
+			// start scanning,
+			sc = sl_bt_scanner_start(gap_1m_phy, scanner_discover_generic);
+			app_assert_status_f(sc, "Failed to start discovery #1\n");
+			app_log("Scanning restarted.\r\n");
 
-        }
+			// and also start advertising as CONNECTABLE
+			sc = sl_bt_legacy_advertiser_generate_data(advertising_set_handle,
+					sl_bt_advertiser_general_discoverable);
+			sc = sl_bt_legacy_advertiser_start(advertising_set_handle,
+					sl_bt_legacy_advertiser_connectable);
+			app_assert_status(sc);
+			app_log("Advertising restarted in CONNECTABLE mode.\r\n");
 
-      break;
+		}
 
-      ///////////////////////////////////////////////////////////////////////////
-      // Add additional event handlers here as your application requires!      //
-      ///////////////////////////////////////////////////////////////////////////
+		break;
 
-      // -------------------------------
-      // Default event handler.
-    default:
-      break;
-    }
+		///////////////////////////////////////////////////////////////////////////
+		// Add additional event handlers here as your application requires!      //
+		///////////////////////////////////////////////////////////////////////////
+
+		// -------------------------------
+		// Default event handler.
+	default:
+		break;
+	}
 }

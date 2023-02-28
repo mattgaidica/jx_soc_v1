@@ -97,12 +97,12 @@
 // [USART0]$
 
 // $[USART1]
-// USART1 CLK on PB00
-#define USART1_CLK_PORT                          gpioPortB
+// USART1 CLK on PA00
+#define USART1_CLK_PORT                          gpioPortA
 #define USART1_CLK_PIN                           0
 
-// USART1 TX on PA00
-#define USART1_TX_PORT                           gpioPortA
+// USART1 TX on PB00
+#define USART1_TX_PORT                           gpioPortB
 #define USART1_TX_PIN                            0
 
 // [USART1]$
@@ -140,11 +140,14 @@
 // [MODEM]$
 
 // $[CUSTOM_PIN_NAME]
-#define INT_2_XL_PORT                            gpioPortB
-#define INT_2_XL_PIN                             1
+#define SPC_PORT                                 gpioPortA
+#define SPC_PIN                                  0
 
-#define INT_1_XL_PORT                            gpioPortB
-#define INT_1_XL_PIN                             2
+#define DRDY_PORT                                gpioPortA
+#define DRDY_PIN                                 5
+
+#define SDIO_PORT                                gpioPortB
+#define SDIO_PIN                                 0
 
 #define CS_MAG_PORT                              gpioPortB
 #define CS_MAG_PIN                               3

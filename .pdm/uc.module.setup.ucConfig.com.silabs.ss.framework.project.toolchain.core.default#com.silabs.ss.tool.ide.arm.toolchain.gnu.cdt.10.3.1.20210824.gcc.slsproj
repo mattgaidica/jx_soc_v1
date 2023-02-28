@@ -14,8 +14,10 @@
     <file name="sl_hfxo_manager_config.h" generated="true" linked="false"/>
     <file name="uartdrv_config.h" generated="true" linked="false"/>
     <file name="app_log_config.h" generated="true" linked="false"/>
+    <file name="sl_emlib_gpio_init_DRDY_config.h" generated="true" linked="false"/>
     <file name="sl_bluetooth_connection_config.h" generated="true" linked="false"/>
     <file name="sl_debug_swo_config.h" generated="true" linked="false"/>
+    <file name="sl_spidrv_spi0_config.h" generated="true" linked="false"/>
     <file name="app_assert_config.h" generated="true" linked="false"/>
     <file name="sl_sleeptimer_config.h" generated="true" linked="false"/>
     <file name="sl_power_manager_config.h" generated="true" linked="false"/>
@@ -27,6 +29,7 @@
     <file name="app_properties_config.h" generated="true" linked="false"/>
     <file name="sl_bluetooth_advertiser_config.h" generated="true" linked="false"/>
     <file name="sl_device_init_emu_config.h" generated="true" linked="false"/>
+    <file name="spidrv_config.h" generated="true" linked="false"/>
     <file name="sl_device_init_hfxo_config.h" generated="true" linked="false"/>
     <file name="sl_rail_util_pa_config.h" generated="true" linked="false"/>
     <file name="btl_interface_cfg.h" generated="true" linked="false"/>
