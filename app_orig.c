@@ -83,14 +83,6 @@ static const char string_peripheral[] = "PERIPHERAL";
 #define CONNECTION_TIMEOUT_EVT  1
 #define BLINK_TIMEOUT_EVT       2
 
-// connection parameters
-#define CONN_INTERVAL_MIN             80   //100ms
-#define CONN_INTERVAL_MAX             80   //100ms
-#define CONN_RESPONDER_LATENCY        0    //no latency
-#define CONN_TIMEOUT                  100  //1000ms
-#define CONN_MIN_CE_LENGTH            0
-#define CONN_MAX_CE_LENGTH            0xffff
-
 // CUSTOM SPI - LSM303AGR
 #define CS_PORT           gpioPortB
 #define CS_XL_PIN         4
@@ -145,7 +137,6 @@ typedef struct {
  * @brief  IADC Initializer
  *****************************************************************************/
 // https: //github.com/tapandas/Silabs_peripheral_example/blob/51aacc51bfae6a3377b3f25ab2aec93a62457024/series2/iadc/iadc_single_em2/src/main_single_em2_xG21.c
-// https://github.com/SiliconLabs/peripheral_examples/blob/master/series2/iadc/iadc_single_letimer_interrupt/src/main_single_letimer_interrupt_xg21_xg22.c
 void initIADC(void) {
 	// Declare init structs
 	IADC_Init_t init = IADC_INIT_DEFAULT;
@@ -338,7 +329,8 @@ get_conn_state(uint8_t state) {
 static device_info_t device_list[MAX_CONNECTIONS];
 
 /* returns true if the remote device address is found in the list of connected device list */
-bool found_device(bd_addr bd_address) {
+bool
+found_device(bd_addr bd_address) {
 	int i;
 
 	for (i = 0; i < numOfActiveConn; i++) {
@@ -351,7 +343,8 @@ bool found_device(bd_addr bd_address) {
 	return false; // Not found
 }
 
-static bool htm_service_found(struct sl_bt_evt_scanner_scan_report_s *pResp) {
+static bool
+htm_service_found(struct sl_bt_evt_scanner_scan_report_s *pResp) {
 
 	// decoding advertising
 	int i = 0, j;
@@ -486,7 +479,8 @@ static void get_system_id(void) {
  *****************************************************************************/
 SL_WEAK void app_init(void) {
 	initIADC();
-//	sl_led_init(&sl_led_led0);
+
+	sl_led_init(&sl_led_led0);
 
 	sl_status_t sc;
 	sc = sl_sleeptimer_start_periodic_timer(&blink_timer, 1 * 32768,
@@ -568,22 +562,18 @@ void sl_bt_on_event(sl_bt_msg_t *evt) {
 	// This event indicates the device has started and the radio is ready.
 	// Do not call any stack command before receiving this boot event!
 	case sl_bt_evt_system_boot_id:
+
 		app_log(
 				"\r\n*** MULTIPLE CENTRAL MULTIPLE PERIPHERAL DUAL TOPOLOGY EXAMPLE ***\r\n\n");
 		get_stack_version(evt);
 		get_system_id(); // also update device name
 
-//		sc = sl_bt_scanner_set_parameters(sl_bt_scanner_scan_mode_passive, 20,
-//				10);
-		sc = sl_bt_connection_set_default_parameters(CONN_INTERVAL_MIN,
-				CONN_INTERVAL_MAX, CONN_RESPONDER_LATENCY, CONN_TIMEOUT,
-				CONN_MIN_CE_LENGTH, CONN_MAX_CE_LENGTH);
+		sc = sl_bt_scanner_set_parameters(sl_bt_scanner_scan_mode_passive, 20,
+				10); // use instead
 		app_assert_status(sc);
 
 		// Start scanning
-//		sc = sl_bt_scanner_start(gap_1m_phy, scanner_discover_generic);
-		sc = sl_bt_scanner_start(sl_bt_scanner_scan_phy_1m,
-				sl_bt_scanner_discover_generic);
+		sc = sl_bt_scanner_start(gap_1m_phy, scanner_discover_generic);
 		app_assert_status_f(sc, "Failed to start discovery #1\n");
 
 		// Create an advertising set.
@@ -597,18 +587,13 @@ void sl_bt_on_event(sl_bt_msg_t *evt) {
 				0);  // max. num. adv. events
 		app_assert_status(sc);
 		// Start general advertising and enable connections.
+
 		sc = sl_bt_legacy_advertiser_generate_data(advertising_set_handle,
 				sl_bt_advertiser_general_discoverable);
 		sc = sl_bt_legacy_advertiser_start(advertising_set_handle,
 				sl_bt_legacy_advertiser_connectable);
 
 		app_assert_status(sc);
-		break;
-
-	case sl_bt_evt_scanner_legacy_advertisement_report_id:
-		if (htm_service_found(&(evt->data.evt_scanner_scan_report))) {
- 			connecting = true;
-		}
 		break;
 
 		// -------------------------------

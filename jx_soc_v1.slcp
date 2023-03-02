@@ -46,7 +46,7 @@ component:
 - {id: bluetooth_feature_legacy_scanner}
 - {id: BGM220SC12WGA}
 - {id: app_log}
-- instance: [DRDY]
+- instance: [DRDY, VBATT]
   id: emlib_gpio_simple_init
 - {id: bt_post_build}
 - {id: bluetooth_feature_connection}

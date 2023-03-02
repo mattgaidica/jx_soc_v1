@@ -24,6 +24,7 @@ sl_emlib_gpio_init_CS_XL_config.h=31459433
 sl_emlib_gpio_init_DRDY_config.h=-217967356
 sl_emlib_gpio_init_SDIO_config.h=-839421560
 sl_emlib_gpio_init_SPC_config.h=-1596331234
+sl_emlib_gpio_init_VBATT_config.h=1706935433
 sl_emlib_gpio_init_pin_config.h=-645442472
 sl_fem_util_config.h=1111679697
 sl_hfxo_manager_config.h=1391893206

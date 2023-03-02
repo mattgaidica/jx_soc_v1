@@ -155,6 +155,9 @@
 #define CS_XL_PORT                               gpioPortB
 #define CS_XL_PIN                                4
 
+#define VBATT_PORT                               gpioPortC
+#define VBATT_PIN                                4
+
 // [CUSTOM_PIN_NAME]$
 
 #endif // PIN_CONFIG_H

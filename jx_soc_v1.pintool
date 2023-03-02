@@ -22,7 +22,9 @@
     <property object="PB04" propertyId="pin.reserve" value="Reserved"/>
     <property object="PC00" propertyId="pin.name" value=""/>
     <property object="PC03" propertyId="pin.name" value=""/>
-    <property object="PC04" propertyId="pin.name" value=""/>
+    <property object="PC04" propertyId="ABModule.selectedRequirement" value="gpio%T%SL_EMLIB_GPIO_INIT_VBATT%T%sl_emlib_gpio_init_VBATT_config.h"/>
+    <property object="PC04" propertyId="pin.name" value="VBATT"/>
+    <property object="PC04" propertyId="pin.reserve" value="Reserved"/>
     <property object="PORTIO" propertyId="portio.gpio.enable.swv" value="Enabled"/>
     <property object="PORTIO" propertyId="portio.pti.enable.dframe" value="Enabled"/>
     <property object="PORTIO" propertyId="portio.pti.enable.dout" value="Enabled"/>
